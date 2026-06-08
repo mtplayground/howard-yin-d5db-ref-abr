@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,10 +18,50 @@ CONFIG_RECORD_VERSION = 1
 SEED_MIN = 0
 SEED_MAX = 2**32 - 1
 SPLIT_NAMES: tuple[str, ...] = ("train", "calibration", "final")
+ENV_DEFAULTS: dict[str, str] = {
+    "REF_ABR_ARTIFACT_ROOT": "artifacts",
+    "REF_ABR_DATASET_BASE_PATH": "data/datasets",
+    "REF_ABR_TRACE_BASE_PATH": "data/traces",
+    "REF_ABR_DEFAULT_RUN_NAME": "default",
+    "REF_ABR_DEFAULT_SEED": "0",
+    "REF_ABR_DEFAULT_SPLIT": "train",
+    "REF_ABR_MAX_WORKERS": "1",
+    "REF_ABR_OVERWRITE_OUTPUTS": "false",
+    "REF_ABR_LOG_LEVEL": "INFO",
+}
+REQUIRED_ENV_KEYS: tuple[str, ...] = tuple(ENV_DEFAULTS)
 
 
 class ConfigError(ValueError):
     """Raised when a config file cannot be parsed or resolved."""
+
+
+@dataclass(frozen=True)
+class EnvConfig:
+    """Environment-derived paths and default run settings."""
+
+    artifact_output_root: Path
+    dataset_base_path: Path
+    trace_base_path: Path
+    default_run_name: str
+    default_seed: int
+    default_split: str
+    max_workers: int
+    overwrite_outputs: bool
+    log_level: str
+
+    def as_payload(self) -> dict[str, str | int | bool]:
+        return {
+            "artifact_output_root": str(self.artifact_output_root),
+            "dataset_base_path": str(self.dataset_base_path),
+            "trace_base_path": str(self.trace_base_path),
+            "default_run_name": self.default_run_name,
+            "default_seed": self.default_seed,
+            "default_split": self.default_split,
+            "max_workers": self.max_workers,
+            "overwrite_outputs": self.overwrite_outputs,
+            "log_level": self.log_level,
+        }
 
 
 @dataclass(frozen=True)
@@ -73,6 +114,59 @@ class ResolvedConfig:
         payload.pop("config_id", None)
         payload.pop("source_path", None)
         return payload
+
+
+def load_env_config(
+    environ: Mapping[str, str] | None = None,
+    env_file: str | Path | None = None,
+) -> EnvConfig:
+    """Resolve environment configuration from defaults, an optional env file, and env vars."""
+
+    values = dict(ENV_DEFAULTS)
+    if env_file is not None:
+        values.update(load_env_file(env_file))
+    source_environ = os.environ if environ is None else environ
+    values.update({key: value for key, value in source_environ.items() if key in REQUIRED_ENV_KEYS})
+
+    return EnvConfig(
+        artifact_output_root=_coerce_env_path(values["REF_ABR_ARTIFACT_ROOT"], "REF_ABR_ARTIFACT_ROOT"),
+        dataset_base_path=_coerce_env_path(values["REF_ABR_DATASET_BASE_PATH"], "REF_ABR_DATASET_BASE_PATH"),
+        trace_base_path=_coerce_env_path(values["REF_ABR_TRACE_BASE_PATH"], "REF_ABR_TRACE_BASE_PATH"),
+        default_run_name=_coerce_env_string(values["REF_ABR_DEFAULT_RUN_NAME"], "REF_ABR_DEFAULT_RUN_NAME"),
+        default_seed=_coerce_seed(values["REF_ABR_DEFAULT_SEED"], "REF_ABR_DEFAULT_SEED"),
+        default_split=_coerce_env_split(values["REF_ABR_DEFAULT_SPLIT"], "REF_ABR_DEFAULT_SPLIT"),
+        max_workers=_coerce_positive_int(values["REF_ABR_MAX_WORKERS"], "REF_ABR_MAX_WORKERS"),
+        overwrite_outputs=_coerce_bool(values["REF_ABR_OVERWRITE_OUTPUTS"], "REF_ABR_OVERWRITE_OUTPUTS"),
+        log_level=_coerce_log_level(values["REF_ABR_LOG_LEVEL"], "REF_ABR_LOG_LEVEL"),
+    )
+
+
+def load_env_file(path: str | Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE env file without mutating process environment."""
+
+    env_path = Path(path)
+    if not env_path.exists():
+        raise ConfigError(f"Env file does not exist: {env_path}")
+    if not env_path.is_file():
+        raise ConfigError(f"Env path is not a file: {env_path}")
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ConfigError(f"Could not read env file {env_path}: {exc}") from exc
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise ConfigError(f"{env_path}:{line_number} must use KEY=VALUE format.")
+        values[key] = _unquote_env_value(value.strip())
+    return values
 
 
 def load_config_file(path: str | Path) -> dict[str, Any]:
@@ -172,6 +266,58 @@ def stable_config_id(payload: Mapping[str, Any]) -> str:
 
     canonical = json.dumps(_canonicalize_json(payload), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _coerce_env_path(value: str, field_name: str) -> Path:
+    cleaned = _coerce_env_string(value, field_name)
+    return Path(cleaned).expanduser()
+
+
+def _coerce_env_string(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{field_name} must be a non-empty string.")
+    return value.strip()
+
+
+def _coerce_env_split(value: str, field_name: str) -> str:
+    split = _coerce_env_string(value, field_name)
+    if split not in SPLIT_NAMES:
+        valid = ", ".join(SPLIT_NAMES)
+        raise ConfigError(f"{field_name} must be one of: {valid}.")
+    return split
+
+
+def _coerce_positive_int(value: str, field_name: str) -> int:
+    if not isinstance(value, str) or not value.isdecimal():
+        raise ConfigError(f"{field_name} must be a positive integer.")
+    parsed = int(value)
+    if parsed < 1:
+        raise ConfigError(f"{field_name} must be a positive integer.")
+    return parsed
+
+
+def _coerce_bool(value: str, field_name: str) -> bool:
+    if not isinstance(value, str):
+        raise ConfigError(f"{field_name} must be a boolean string.")
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{field_name} must be one of: true, false, 1, 0, yes, no, on, off.")
+
+
+def _coerce_log_level(value: str, field_name: str) -> str:
+    normalized = _coerce_env_string(value, field_name).upper()
+    if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigError(f"{field_name} must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL.")
+    return normalized
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _resolve_root_seed(seed_value: Any) -> int:
