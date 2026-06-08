@@ -5,15 +5,20 @@ import pytest
 from ref_abr.baselines import (
     BaselineError,
     BandwidthGreedyBaseline,
+    BOLASlackAdaptedBaseline,
     CAGSFixedReferenceBaseline,
     DeadlineGreedyBaseline,
     FixedReferenceCadenceBaseline,
     IndependentGaussianSchedulerBaseline,
     IndependentReferenceSchedulerBaseline,
+    PerfectInformationOracle,
     QualityMaxDeadlineUnawareBaseline,
     ReferenceOnlyAfterBaseBaseline,
+    RobustMPCJointSpaceBaseline,
     SVQGaussianOnlyABRBaseline,
+    canonical_abr_baselines,
     minimum_baselines,
+    perfect_information_oracles,
     simple_baselines,
 )
 from ref_abr.candidates import CandidateGenerationSpec, DecisionEpoch, generate_candidate_objects
@@ -228,6 +233,78 @@ def test_simple_baseline_set_and_cadence_validation() -> None:
     ]
     with pytest.raises(BaselineError, match="cadence_ms"):
         FixedReferenceCadenceBaseline(cadence_ms=0)
+
+
+def test_robust_mpc_joint_space_selects_utility_adjusted_candidate() -> None:
+    observation = _observation(resolutions=("720p", "1080p"), expiration_ms=(50, 200))
+    method = RobustMPCJointSpaceBaseline(uncertainty_penalty=0.25, deadline_penalty=0.25, resource_penalty=0.1)
+
+    decision = plan_schedule(
+        method,
+        observation,
+        observation_budget=ObservationBudget(max_candidates=80),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert len(selected) == 1
+    assert decision.expected_utility is not None
+    assert decision.metadata["baseline"]["policy"] == "robust_mpc_joint_space"
+    assert decision.metadata["baseline"]["freeze_eligible"] is True
+
+
+def test_bola_slack_adapted_uses_slack_and_records_freeze_eligibility() -> None:
+    observation = _observation(expiration_ms=(50, 200))
+    method = BOLASlackAdaptedBaseline(slack_weight=2.0, size_penalty=0.0)
+
+    decision = plan_schedule(
+        method,
+        observation,
+        observation_budget=ObservationBudget(max_candidates=80),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert len(selected) == 1
+    assert selected[0].expiration_ms == 200
+    assert decision.metadata["baseline"]["policy"] == "bola_slack_adapted"
+    assert decision.metadata["baseline"]["freeze_eligible"] is True
+
+
+def test_perfect_information_oracle_selects_best_feasible_candidate_and_is_not_freeze_eligible() -> None:
+    observation = _observation(resolutions=("720p", "1080p"), expiration_ms=(50, 200))
+    utility_by_candidate = {estimate.candidate_id: estimate for estimate in observation.utility_estimates}
+    feasible = [
+        candidate
+        for candidate in observation.candidates
+        if candidate.size_bytes <= 1_000_000
+    ]
+    expected_best = max(feasible, key=lambda candidate: utility_by_candidate[candidate.candidate_id].expected_utility)
+
+    decision = plan_schedule(
+        PerfectInformationOracle(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=80),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_candidates=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert selected == (expected_best,)
+    assert decision.metadata["baseline"]["policy"] == "perfect_information_oracle"
+    assert decision.metadata["baseline"]["oracle"] is True
+    assert decision.metadata["baseline"]["freeze_eligible"] is False
+    with pytest.raises(BaselineError, match="freeze_eligible"):
+        PerfectInformationOracle(freeze_eligible=True)
+
+
+def test_canonical_baseline_and_oracle_sets() -> None:
+    canonical = canonical_abr_baselines()
+    oracles = perfect_information_oracles()
+
+    assert [method.method_id for method in canonical] == ["robust-mpc-joint-space", "bola-slack-adapted"]
+    assert all(method.freeze_eligible for method in canonical)
+    assert [method.method_id for method in oracles] == ["perfect-information-oracle"]
+    assert all(not oracle.freeze_eligible for oracle in oracles)
 
 
 def _selected_candidates(observation: SchedulingObservation, selected_candidate_ids) -> tuple:
