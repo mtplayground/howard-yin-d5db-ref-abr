@@ -6,6 +6,7 @@ from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from ref_abr.allocator import allocate_from_observation, decision_payload_from_allocation
 from ref_abr.candidates import CandidateObject
 from ref_abr.domain import LifecycleStatus
 from ref_abr.methods import ActionBudget, SchedulingObservation
@@ -353,6 +354,46 @@ class BOLASlackAdaptedBaseline:
 
 
 @dataclass(frozen=True)
+class DeadlineAwareKnapsackAllocatorBaseline:
+    """Deadline-aware dependency-closed knapsack allocator baseline."""
+
+    max_render_ms: float | None = None
+    max_compute_ms: float | None = None
+    method_id: str = "deadline-aware-knapsack-allocator"
+    method_name: str = "Deadline-aware knapsack allocator"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.max_render_ms is not None:
+            object.__setattr__(self, "max_render_ms", _non_negative_float(self.max_render_ms, "max_render_ms"))
+        if self.max_compute_ms is not None:
+            object.__setattr__(self, "max_compute_ms", _non_negative_float(self.max_compute_ms, "max_compute_ms"))
+        _require_non_empty(self.method_id, "method_id")
+        _require_non_empty(self.method_name, "method_name")
+        object.__setattr__(self, "metadata", _plain_json_mapping(self.metadata, "metadata"))
+
+    def plan_schedule(self, observation: SchedulingObservation, action_budget: ActionBudget) -> dict[str, Any]:
+        allocation = allocate_from_observation(
+            observation,
+            action_budget,
+            max_render_ms=self.max_render_ms,
+            max_compute_ms=self.max_compute_ms,
+            satisfied_dependencies=_active_base_object_ids(observation),
+        )
+        payload = decision_payload_from_allocation(
+            allocation,
+            method_id=self.method_id,
+            method_name=self.method_name,
+        )
+        payload["metadata"]["baseline"]["parameters"] = {
+            "max_render_ms": self.max_render_ms,
+            "max_compute_ms": self.max_compute_ms,
+            **_to_payload(self.metadata),
+        }
+        return payload
+
+
+@dataclass(frozen=True)
 class PerfectInformationOracle:
     """Perfect-information oracle over visible candidates.
 
@@ -399,6 +440,12 @@ def canonical_abr_baselines() -> tuple[RobustMPCJointSpaceBaseline, BOLASlackAda
     """Return adapted canonical ABR baselines."""
 
     return (RobustMPCJointSpaceBaseline(), BOLASlackAdaptedBaseline())
+
+
+def deadline_aware_allocators() -> tuple[DeadlineAwareKnapsackAllocatorBaseline, ...]:
+    """Return deadline-aware allocator methods."""
+
+    return (DeadlineAwareKnapsackAllocatorBaseline(),)
 
 
 def perfect_information_oracles() -> tuple[PerfectInformationOracle, ...]:
