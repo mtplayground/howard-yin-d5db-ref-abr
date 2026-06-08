@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "howard-yin-d5db-ref-abr"
+version = "0.1.0"
+description = "Reference ABR experiment toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click==8.1.7",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.2.2",
+]
+
+[project.scripts]
+ref-abr = "ref_abr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
