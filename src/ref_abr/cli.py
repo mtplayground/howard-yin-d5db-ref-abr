@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from ref_abr import __version__
+from ref_abr.config import ConfigError, SPLIT_NAMES, resolve_config
 from ref_abr.entrypoints import (
     ENTRYPOINT_VERBS,
     EntrypointInvocation,
@@ -37,6 +38,7 @@ def _dispatch_command(
     config: str | None,
     output_dir: str | None,
     overrides: tuple[str, ...],
+    split: str | None,
     dry_run: bool,
     as_json: bool,
 ) -> None:
@@ -50,11 +52,22 @@ def _dispatch_command(
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--set") from exc
 
+    try:
+        resolved_config = (
+            resolve_config(config, overrides=parsed_overrides, split=split).as_payload()
+            if config is not None
+            else None
+        )
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     invocation = EntrypointInvocation(
         verb=verb,
         config=Path(config) if config is not None else None,
         output_dir=Path(output_dir) if output_dir is not None else None,
         overrides=parsed_overrides,
+        split=split,
+        resolved_config=resolved_config,
         dry_run=dry_run,
     )
     result = state.registry.dispatch(invocation)
@@ -83,6 +96,12 @@ def _entrypoint_command(verb: str) -> click.Command:
         help="Configuration override. May be provided more than once.",
     )
     @click.option(
+        "--split",
+        "split",
+        type=click.Choice(SPLIT_NAMES),
+        help="Resolve the config for a specific split identity.",
+    )
+    @click.option(
         "--dry-run",
         is_flag=True,
         help="Resolve and validate routing without writing artifacts.",
@@ -99,10 +118,11 @@ def _entrypoint_command(verb: str) -> click.Command:
         config: str | None,
         output_dir: str | None,
         overrides: tuple[str, ...],
+        split: str | None,
         dry_run: bool,
         as_json: bool,
     ) -> None:
-        _dispatch_command(ctx, verb, config, output_dir, overrides, dry_run, as_json)
+        _dispatch_command(ctx, verb, config, output_dir, overrides, split, dry_run, as_json)
 
     command.help = f"Resolve and dispatch the {verb} entrypoint."
     return command

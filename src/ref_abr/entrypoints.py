@@ -31,16 +31,23 @@ class EntrypointInvocation:
     config: Path | None = None
     output_dir: Path | None = None
     overrides: Mapping[str, str] = field(default_factory=dict)
+    split: str | None = None
+    resolved_config: Mapping[str, Any] | None = None
     dry_run: bool = False
 
     def as_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "verb": self.verb,
             "config": str(self.config) if self.config is not None else None,
             "output_dir": str(self.output_dir) if self.output_dir is not None else None,
             "overrides": dict(self.overrides),
             "dry_run": self.dry_run,
         }
+        if self.split is not None:
+            payload["split"] = self.split
+        if self.resolved_config is not None:
+            payload["resolved_config"] = dict(self.resolved_config)
+        return payload
 
 
 @dataclass(frozen=True)
