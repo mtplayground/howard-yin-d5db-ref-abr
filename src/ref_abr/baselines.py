@@ -275,6 +275,116 @@ class QualityMaxDeadlineUnawareBaseline:
         return _decision_payload(self, observation, selected, "quality_max_deadline_unaware", utility_by_candidate)
 
 
+@dataclass(frozen=True)
+class RobustMPCJointSpaceBaseline:
+    """Robust-MPC-style baseline over the joint Gaussian/reference action space."""
+
+    uncertainty_penalty: float = 0.5
+    deadline_penalty: float = 0.75
+    resource_penalty: float = 0.25
+    method_id: str = "robust-mpc-joint-space"
+    method_name: str = "Robust MPC joint-space"
+    freeze_eligible: bool = True
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "uncertainty_penalty", _non_negative_float(self.uncertainty_penalty, "uncertainty_penalty"))
+        object.__setattr__(self, "deadline_penalty", _non_negative_float(self.deadline_penalty, "deadline_penalty"))
+        object.__setattr__(self, "resource_penalty", _non_negative_float(self.resource_penalty, "resource_penalty"))
+        _require_non_empty(self.method_id, "method_id")
+        _require_non_empty(self.method_name, "method_name")
+        if not isinstance(self.freeze_eligible, bool):
+            raise BaselineError("freeze_eligible must be boolean.")
+        object.__setattr__(self, "metadata", _plain_json_mapping(self.metadata, "metadata"))
+
+    def plan_schedule(self, observation: SchedulingObservation, action_budget: ActionBudget) -> dict[str, Any]:
+        utility_by_candidate = _utility_by_candidate(observation.utility_estimates)
+        ranked = tuple(sorted(observation.candidates, key=lambda candidate: _robust_mpc_sort_key(candidate, utility_by_candidate, self)))
+        selected = _select_with_budget(ranked, action_budget, allowed_kinds=ALL_CANDIDATE_KINDS)
+        return _decision_payload(
+            self,
+            observation,
+            selected,
+            "robust_mpc_joint_space",
+            utility_by_candidate,
+            extra_metadata={"freeze_eligible": self.freeze_eligible},
+        )
+
+
+@dataclass(frozen=True)
+class BOLASlackAdaptedBaseline:
+    """BOLA-style baseline adapted with candidate deadline slack."""
+
+    utility_weight: float = 1.0
+    slack_weight: float = 0.35
+    size_penalty: float = 0.15
+    method_id: str = "bola-slack-adapted"
+    method_name: str = "BOLA slack-adapted"
+    freeze_eligible: bool = True
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "utility_weight", _non_negative_float(self.utility_weight, "utility_weight"))
+        object.__setattr__(self, "slack_weight", _non_negative_float(self.slack_weight, "slack_weight"))
+        object.__setattr__(self, "size_penalty", _non_negative_float(self.size_penalty, "size_penalty"))
+        _require_non_empty(self.method_id, "method_id")
+        _require_non_empty(self.method_name, "method_name")
+        if not isinstance(self.freeze_eligible, bool):
+            raise BaselineError("freeze_eligible must be boolean.")
+        object.__setattr__(self, "metadata", _plain_json_mapping(self.metadata, "metadata"))
+
+    def plan_schedule(self, observation: SchedulingObservation, action_budget: ActionBudget) -> dict[str, Any]:
+        utility_by_candidate = _utility_by_candidate(observation.utility_estimates)
+        ranked = tuple(
+            sorted(
+                observation.candidates,
+                key=lambda candidate: _bola_slack_sort_key(candidate, observation, action_budget, utility_by_candidate, self),
+            )
+        )
+        selected = _select_with_budget(ranked, action_budget, allowed_kinds=ALL_CANDIDATE_KINDS)
+        return _decision_payload(
+            self,
+            observation,
+            selected,
+            "bola_slack_adapted",
+            utility_by_candidate,
+            extra_metadata={"freeze_eligible": self.freeze_eligible},
+        )
+
+
+@dataclass(frozen=True)
+class PerfectInformationOracle:
+    """Perfect-information oracle over visible candidates.
+
+    This method is intentionally ineligible for frozen-method export because it
+    uses realized utility estimates directly as oracle information.
+    """
+
+    method_id: str = "perfect-information-oracle"
+    method_name: str = "Perfect-information oracle"
+    freeze_eligible: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.method_id, "method_id")
+        _require_non_empty(self.method_name, "method_name")
+        if self.freeze_eligible is not False:
+            raise BaselineError("PerfectInformationOracle.freeze_eligible must be False.")
+        object.__setattr__(self, "metadata", _plain_json_mapping(self.metadata, "metadata"))
+
+    def plan_schedule(self, observation: SchedulingObservation, action_budget: ActionBudget) -> dict[str, Any]:
+        utility_by_candidate = _utility_by_candidate(observation.utility_estimates)
+        selected = _oracle_select(observation.candidates, action_budget, utility_by_candidate)
+        return _decision_payload(
+            self,
+            observation,
+            selected,
+            "perfect_information_oracle",
+            utility_by_candidate,
+            extra_metadata={"freeze_eligible": False, "oracle": True},
+        )
+
+
 def minimum_baselines() -> tuple[CAGSFixedReferenceBaseline, SVQGaussianOnlyABRBaseline, ReferenceOnlyAfterBaseBaseline]:
     """Return the minimum status-quo/canonical baseline set."""
 
@@ -283,6 +393,18 @@ def minimum_baselines() -> tuple[CAGSFixedReferenceBaseline, SVQGaussianOnlyABRB
         SVQGaussianOnlyABRBaseline(),
         ReferenceOnlyAfterBaseBaseline(),
     )
+
+
+def canonical_abr_baselines() -> tuple[RobustMPCJointSpaceBaseline, BOLASlackAdaptedBaseline]:
+    """Return adapted canonical ABR baselines."""
+
+    return (RobustMPCJointSpaceBaseline(), BOLASlackAdaptedBaseline())
+
+
+def perfect_information_oracles() -> tuple[PerfectInformationOracle, ...]:
+    """Return perfect-information oracles, which are not freeze eligible."""
+
+    return (PerfectInformationOracle(),)
 
 
 def simple_baselines() -> tuple[
@@ -338,8 +460,10 @@ def _decision_payload(
     selected: tuple[CandidateObject, ...],
     policy: str,
     utility_by_candidate: Mapping[str, CandidateUtilityEstimate] | None = None,
+    extra_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     utility_by_candidate = utility_by_candidate or {}
+    extra_metadata = extra_metadata or {}
     expected_utility = sum(
         utility_by_candidate[candidate.candidate_id].expected_utility
         for candidate in selected
@@ -355,6 +479,7 @@ def _decision_payload(
                 "policy": policy,
                 "selected_candidate_kinds": [candidate.candidate_kind for candidate in selected],
                 "parameters": _to_payload(method.metadata),
+                **_to_payload(extra_metadata),
             }
         },
     }
@@ -444,6 +569,111 @@ def _quality_sort_key(
         candidate.size_bytes,
         candidate.candidate_id,
     )
+
+
+def _robust_mpc_sort_key(
+    candidate: CandidateObject,
+    utility_by_candidate: Mapping[str, CandidateUtilityEstimate],
+    method: RobustMPCJointSpaceBaseline,
+) -> tuple[float, int, int, str]:
+    estimate = utility_by_candidate.get(candidate.candidate_id)
+    if estimate is None:
+        score = _candidate_quality(candidate, utility_by_candidate)
+    else:
+        score = (
+            estimate.expected_utility
+            - method.uncertainty_penalty * estimate.uncertainty.utility_stddev
+            - method.deadline_penalty * estimate.deadline_miss_probability
+            - method.resource_penalty * estimate.resource_price.total
+        )
+    return (-score, candidate.deadline_ms, candidate.size_bytes, candidate.candidate_id)
+
+
+def _bola_slack_sort_key(
+    candidate: CandidateObject,
+    observation: SchedulingObservation,
+    action_budget: ActionBudget,
+    utility_by_candidate: Mapping[str, CandidateUtilityEstimate],
+    method: BOLASlackAdaptedBaseline,
+) -> tuple[float, int, str]:
+    quality = _candidate_quality(candidate, utility_by_candidate)
+    slack_ms = max(0.0, float(candidate.deadline_ms - observation.decision_time_ms))
+    horizon_ms = max(1.0, float(observation.target_deadline_ms - observation.decision_time_ms))
+    slack_ratio = min(1.0, slack_ms / horizon_ms)
+    size_ratio = candidate.size_bytes / max(1, action_budget.max_selected_bytes)
+    estimate = utility_by_candidate.get(candidate.candidate_id)
+    deadline_risk = estimate.deadline_miss_probability if estimate is not None else 0.0
+    score = method.utility_weight * quality + method.slack_weight * slack_ratio - method.size_penalty * size_ratio - deadline_risk
+    return (-score, candidate.size_bytes, candidate.candidate_id)
+
+
+def _oracle_select(
+    candidates: tuple[CandidateObject, ...],
+    action_budget: ActionBudget,
+    utility_by_candidate: Mapping[str, CandidateUtilityEstimate],
+) -> tuple[CandidateObject, ...]:
+    ranked_candidates = tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                -_oracle_candidate_value(candidate, utility_by_candidate),
+                candidate.size_bytes,
+                candidate.candidate_id,
+            ),
+        )
+    )
+    max_selected_candidates = action_budget.max_selected_candidates or action_budget.max_selected_objects
+    best_score = 0.0
+    best_selection: tuple[CandidateObject, ...] = ()
+
+    def visit(
+        index: int,
+        selected: tuple[CandidateObject, ...],
+        selected_object_ids: frozenset[str],
+        selected_bytes: int,
+        score: float,
+    ) -> None:
+        nonlocal best_score, best_selection
+        if score > best_score or (score == best_score and _selection_tiebreak(selected) < _selection_tiebreak(best_selection)):
+            best_score = score
+            best_selection = selected
+        if index >= len(ranked_candidates):
+            return
+        if len(selected) >= max_selected_candidates or len(selected_object_ids) >= action_budget.max_selected_objects:
+            return
+        for next_index in range(index, len(ranked_candidates)):
+            candidate = ranked_candidates[next_index]
+            if candidate.object_id in selected_object_ids:
+                continue
+            if selected_bytes + candidate.size_bytes > action_budget.max_selected_bytes:
+                continue
+            candidate_value = _oracle_candidate_value(candidate, utility_by_candidate)
+            if candidate_value <= 0:
+                continue
+            visit(
+                next_index + 1,
+                (*selected, candidate),
+                selected_object_ids | {candidate.object_id},
+                selected_bytes + candidate.size_bytes,
+                score + candidate_value,
+            )
+
+    visit(0, (), frozenset(), 0, 0.0)
+    return best_selection
+
+
+def _oracle_candidate_value(
+    candidate: CandidateObject,
+    utility_by_candidate: Mapping[str, CandidateUtilityEstimate],
+) -> float:
+    estimate = utility_by_candidate.get(candidate.candidate_id)
+    if estimate is not None:
+        return estimate.expected_utility
+    return _candidate_quality(candidate, utility_by_candidate)
+
+
+def _selection_tiebreak(selected: tuple[CandidateObject, ...]) -> tuple[int, tuple[str, ...]]:
+    return (sum(candidate.size_bytes for candidate in selected), tuple(candidate.candidate_id for candidate in selected))
 
 
 def _candidate_quality(
@@ -543,6 +773,20 @@ def _non_negative_int(value: Any, field_name: str) -> int:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
         raise BaselineError(f"{field_name} must be a non-negative integer.") from exc
+    if parsed < 0:
+        raise BaselineError(f"{field_name} must be non-negative.")
+    return parsed
+
+
+def _non_negative_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise BaselineError(f"{field_name} must be a non-negative number.")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise BaselineError(f"{field_name} must be a non-negative number.") from exc
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        raise BaselineError(f"{field_name} must be finite.")
     if parsed < 0:
         raise BaselineError(f"{field_name} must be non-negative.")
     return parsed
