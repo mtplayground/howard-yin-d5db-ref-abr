@@ -4,10 +4,17 @@ import pytest
 
 from ref_abr.baselines import (
     BaselineError,
+    BandwidthGreedyBaseline,
     CAGSFixedReferenceBaseline,
+    DeadlineGreedyBaseline,
+    FixedReferenceCadenceBaseline,
+    IndependentGaussianSchedulerBaseline,
+    IndependentReferenceSchedulerBaseline,
+    QualityMaxDeadlineUnawareBaseline,
     ReferenceOnlyAfterBaseBaseline,
     SVQGaussianOnlyABRBaseline,
     minimum_baselines,
+    simple_baselines,
 )
 from ref_abr.candidates import CandidateGenerationSpec, DecisionEpoch, generate_candidate_objects
 from ref_abr.domain import ControllerState, LifecycleStatus, MediaType, ReferenceLifecycleState
@@ -110,6 +117,119 @@ def test_minimum_baseline_set_and_invalid_config() -> None:
         CAGSFixedReferenceBaseline(fixed_resolution="")
 
 
+def test_fixed_reference_cadence_selects_only_on_aligned_epochs() -> None:
+    observation = _observation(decision_time_ms=10)
+    method = FixedReferenceCadenceBaseline(cadence_ms=10)
+
+    aligned = plan_schedule(
+        method,
+        observation,
+        observation_budget=ObservationBudget(max_candidates=20),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+    selected = _selected_candidates(observation, aligned.metadata["adapter"]["selected_candidate_ids"])
+    assert {candidate.candidate_kind for candidate in selected} == {"reference_action"}
+    assert aligned.metadata["baseline"]["policy"] == "fixed_reference_cadence"
+
+    skipped = plan_schedule(
+        FixedReferenceCadenceBaseline(cadence_ms=100, phase_ms=0),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=20),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+    assert skipped.selected_object_ids == ()
+    assert skipped.metadata["baseline"]["policy"] == "fixed_reference_cadence_skip"
+
+
+def test_independent_gaussian_and_reference_schedulers_partition_candidates() -> None:
+    observation = _observation()
+
+    gaussian_decision = plan_schedule(
+        IndependentGaussianSchedulerBaseline(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=20),
+        action_budget=ActionBudget(max_selected_objects=2, max_selected_bytes=1_000_000),
+    )
+    gaussian_selected = _selected_candidates(observation, gaussian_decision.metadata["adapter"]["selected_candidate_ids"])
+    assert gaussian_selected
+    assert all(candidate.candidate_kind in {"gaussian_base", "gaussian_enhancement", "tile"} for candidate in gaussian_selected)
+
+    reference_decision = plan_schedule(
+        IndependentReferenceSchedulerBaseline(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=20),
+        action_budget=ActionBudget(max_selected_objects=2, max_selected_bytes=1_000_000),
+    )
+    reference_selected = _selected_candidates(observation, reference_decision.metadata["adapter"]["selected_candidate_ids"])
+    assert reference_selected
+    assert {candidate.candidate_kind for candidate in reference_selected} == {"reference_action"}
+
+
+def test_bandwidth_greedy_prefers_smallest_candidates() -> None:
+    observation = _observation(size_bytes=100_001, tile_columns=2)
+
+    decision = plan_schedule(
+        BandwidthGreedyBaseline(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=30),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert len(selected) == 1
+    assert selected[0].candidate_kind == "tile"
+    assert selected[0].size_bytes == 50_001
+    assert decision.metadata["baseline"]["policy"] == "bandwidth_greedy"
+
+
+def test_deadline_greedy_prefers_nearest_deadline() -> None:
+    observation = _observation(expiration_ms=(50, 100))
+
+    decision = plan_schedule(
+        DeadlineGreedyBaseline(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=40),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert len(selected) == 1
+    assert selected[0].expiration_ms == 50
+    assert selected[0].deadline_ms == 60
+    assert decision.metadata["baseline"]["policy"] == "deadline_greedy"
+
+
+def test_quality_max_deadline_unaware_prefers_highest_quality_resolution() -> None:
+    observation = _observation(resolutions=("720p", "1080p"), expiration_ms=(50, 200))
+
+    decision = plan_schedule(
+        QualityMaxDeadlineUnawareBaseline(),
+        observation,
+        observation_budget=ObservationBudget(max_candidates=80),
+        action_budget=ActionBudget(max_selected_objects=1, max_selected_bytes=1_000_000),
+    )
+
+    selected = _selected_candidates(observation, decision.metadata["adapter"]["selected_candidate_ids"])
+    assert len(selected) == 1
+    assert selected[0].resolution.height_px == 1080
+    assert decision.metadata["baseline"]["policy"] == "quality_max_deadline_unaware"
+
+
+def test_simple_baseline_set_and_cadence_validation() -> None:
+    baselines = simple_baselines()
+
+    assert [baseline.method_id for baseline in baselines] == [
+        "fixed-reference-cadence",
+        "independent-gaussian",
+        "independent-reference",
+        "bandwidth-greedy",
+        "deadline-greedy",
+        "quality-max-deadline-unaware",
+    ]
+    with pytest.raises(BaselineError, match="cadence_ms"):
+        FixedReferenceCadenceBaseline(cadence_ms=0)
+
+
 def _selected_candidates(observation: SchedulingObservation, selected_candidate_ids) -> tuple:
     candidate_by_id = {candidate.candidate_id: candidate for candidate in observation.candidates}
     return tuple(candidate_by_id[candidate_id] for candidate_id in selected_candidate_ids)
@@ -118,20 +238,24 @@ def _selected_candidates(observation: SchedulingObservation, selected_candidate_
 def _observation(
     *,
     size_bytes: int = 100_000,
+    decision_time_ms: int = 10,
+    resolutions: tuple[str, ...] = ("720p",),
+    expiration_ms: tuple[int, ...] = (100,),
+    tile_columns: int = 1,
     lifecycle_states: tuple[ReferenceLifecycleState, ...] = (),
 ) -> SchedulingObservation:
     candidate_set = generate_candidate_objects(
         _workload(size_bytes=size_bytes),
-        DecisionEpoch(decision_time_ms=10, frame_id="frame-1"),
+        DecisionEpoch(decision_time_ms=decision_time_ms, frame_id="frame-1"),
         spec=CandidateGenerationSpec(
-            resolutions=("720p",),
+            resolutions=resolutions,
             fov_degrees=(90,),
             lookahead_ms=(0,),
-            expiration_ms=(100,),
+            expiration_ms=expiration_ms,
             retransmit_priorities=(0,),
             enhancement_layers=(1,),
             tile_rows=1,
-            tile_columns=1,
+            tile_columns=tile_columns,
         ),
         substrate_provider=ParametricSubstrateValueProvider(),
     )
@@ -148,8 +272,8 @@ def _observation(
             active_split="calibration",
         ),
         frame_id="frame-1",
-        decision_time_ms=10,
-        target_deadline_ms=110,
+        decision_time_ms=decision_time_ms,
+        target_deadline_ms=decision_time_ms + max(expiration_ms),
         candidate_set=candidate_set,
         utility_estimates=utilities.estimates,
         lifecycle_states=lifecycle_states,
