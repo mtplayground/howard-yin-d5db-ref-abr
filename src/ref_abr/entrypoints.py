@@ -121,10 +121,12 @@ def pending_entrypoint_handler(invocation: EntrypointInvocation) -> EntrypointRe
 
 
 def build_default_registry() -> EntrypointRegistry:
+    from ref_abr.freeze import freeze_method_entrypoint
     from ref_abr.metrics import compute_metrics_entrypoint
 
     registry = EntrypointRegistry()
     for verb in ENTRYPOINT_VERBS:
         registry.register(verb, pending_entrypoint_handler)
     registry.register("compute_metrics", compute_metrics_entrypoint)
+    registry.register("freeze_method", freeze_method_entrypoint)
     return registry
