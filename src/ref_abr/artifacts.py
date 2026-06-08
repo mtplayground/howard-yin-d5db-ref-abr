@@ -12,7 +12,7 @@ from typing import Any, Literal, Mapping
 
 from ref_abr.accounting import CandidateResourceAccount, ComponentTimingAccount, ResourceAccountingSummary
 from ref_abr.candidates import CandidateObject
-from ref_abr.domain import ControllerState, FrameOutcome, ScheduleDecision
+from ref_abr.domain import ControllerState, FrameOutcome, MetricRecord, ScheduleDecision
 from ref_abr.lifecycle import ReferenceLifecycleEvent
 from ref_abr.schema import DOMAIN_SCHEMA_VERSION, RECORD_TYPE_FIELD, SCHEMA_VERSION_FIELD, stamp_record
 
@@ -24,6 +24,7 @@ RawExportRecord = (
     | ScheduleDecision
     | ReferenceLifecycleEvent
     | FrameOutcome
+    | MetricRecord
     | CandidateResourceAccount
     | ResourceAccountingSummary
     | ComponentTimingAccount
@@ -164,6 +165,7 @@ def export_raw_artifacts(
     decisions: Sequence[ScheduleDecision] = (),
     lifecycle_events: Sequence[ReferenceLifecycleEvent] = (),
     frame_outcomes: Sequence[FrameOutcome] = (),
+    metric_records: Sequence[MetricRecord] = (),
     timing_records: Sequence[CandidateResourceAccount | ResourceAccountingSummary | ComponentTimingAccount] = (),
     config: RawArtifactExportConfig | None = None,
 ) -> RawArtifactManifest:
@@ -185,6 +187,7 @@ def export_raw_artifacts(
         ("decisions", "schedule_decision", _coerce_records(decisions, ScheduleDecision, "decisions")),
         ("lifecycle_events", "reference_lifecycle_event", _coerce_records(lifecycle_events, ReferenceLifecycleEvent, "lifecycle_events")),
         ("frame_outcomes", "frame_outcome", _coerce_records(frame_outcomes, FrameOutcome, "frame_outcomes")),
+        ("metric_records", "metric_record", _coerce_records(metric_records, MetricRecord, "metric_records")),
         ("timing_records", "timing_record", _coerce_timing_records(timing_records)),
     )
 
@@ -271,6 +274,8 @@ def infer_raw_record_type(record: object) -> str:
         return "reference_lifecycle_event"
     if isinstance(record, FrameOutcome):
         return "frame_outcome"
+    if isinstance(record, MetricRecord):
+        return "metric_record"
     if isinstance(record, CandidateResourceAccount):
         return "candidate_resource_account"
     if isinstance(record, ResourceAccountingSummary):
@@ -281,7 +286,7 @@ def infer_raw_record_type(record: object) -> str:
 
 
 def _stamp_raw_payload(record: RawExportRecord, record_type: str) -> dict[str, Any]:
-    if record_type in {"controller_state", "schedule_decision", "frame_outcome"}:
+    if record_type in {"controller_state", "schedule_decision", "frame_outcome", "metric_record"}:
         return stamp_record(record, record_type=record_type)
     as_payload = getattr(record, "as_payload", None)
     if not callable(as_payload):
