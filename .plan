@@ -1,0 +1,43 @@
+Architecture plan for howard-yin-d5db-ref-abr
+
+Repository shape
+- Python package under src/ref_abr with a single Click CLI entrypoint.
+- Tests under tests, split by layer: config/data loading, method interfaces, scheduler/lifecycle, metrics, exporters, and CLI smoke.
+- Versioned schemas under schemas, example configs and env documentation at repository root, deterministic fixtures under tests/fixtures.
+- Generated experiment artifacts should be written raw-first under a configured output directory, with stable manifests and machine-readable records.
+
+Proposed module structure
+- ref_abr.cli: Click command group and uniform routing for plan_schedule, compute_metrics, freeze_method, derive_paper_outputs, and harness commands.
+- ref_abr.config: environment parsing, config loading, seed/split identity, stable config IDs, .env.example support.
+- ref_abr.domain: shared dataclasses or Pydantic models for scenes, sequences, device profiles, traces, candidates, schedules, references, frame outcomes, metrics, manifests, and schema version metadata.
+- ref_abr.schema: validation, schema migration/version checks, manifest validators, export schema helpers.
+- ref_abr.workloads: scene/sequence loaders, replay subset assembly, workload manifest construction.
+- ref_abr.traces: viewport, viewport-error sweep, network, and synthetic boundary trace normalizers.
+- ref_abr.devices: device profile loading and validation.
+- ref_abr.substrate: provider interface plus parametric and empirical lookup-table backends.
+- ref_abr.candidates: candidate object generation.
+- ref_abr.utility: utility scoring and deadline model.
+- ref_abr.methods: method adapter interface, observation/action-budget enforcement, baselines, ABR adaptations, oracles, MPC, virtual queue, ablation switches, and frozen method manifests.
+- ref_abr.scheduler: discrete-event core, reference lifecycle state machine, expiration/retransmission logic, timing/resource accounting, and frame outcome evaluation.
+- ref_abr.metrics: quality, deadline-QoE, useful-resource, lifecycle, resource-cost, control-stability, viewport-prediction, confidence, and missing-data validation metrics.
+- ref_abr.exporters: raw artifact export, metric-record export, reproducibility evidence, and paper-output derivation.
+- ref_abr.harnesses: generic runner plus named experiment harnesses for substitution surface, lifecycle deadline, selection, full-system QoE, ablations, stress robustness, and reproducibility.
+
+Issue dependency flow
+- Foundation: #1 creates package/CLI; #2-#5 establish config, types, schemas, and environment conventions.
+- Input pipeline: #6-#12 load workloads, traces, devices, substrate values, replay subsets, and manifests.
+- Planning model: #13-#19 define candidates, utility/deadlines, method interface, baselines, ABR adaptations, and diagnostic comparators.
+- Simulation core: #20-#24 provide scheduler execution, lifecycle behavior, transport expiration/retransmission, accounting, and frame outcomes.
+- Artifacts and metrics: #25-#30 export raw records and compute all metric families through a stable entrypoint.
+- Harnesses and controllers: #31-#44 build the generic runner, experiment harnesses, calibration, advanced allocators/controllers, ablations, stress tests, and reproducibility evidence.
+- Paper and validation: #45 derives publication outputs; #46-#50 add focused tests and deterministic end-to-end smoke coverage.
+
+Key design decisions
+- Keep CLI commands thin; command handlers should call typed application services so tests can bypass Click.
+- Use deterministic seeds, split identities, stable config IDs, and sorted serialization everywhere manifests or exported records are compared.
+- Treat schemas as explicit public contracts with version fields; reject unknown incompatible versions early and preserve raw input artifacts alongside normalized records.
+- Enforce method adapter contracts centrally: bounded observations, action budgets, deterministic behavior under fixed seeds, and validation before scheduler execution.
+- Model scheduling as deterministic discrete events with lifecycle state transitions as a separate testable state machine.
+- Prefer append-only, line-oriented or structured JSON exports for raw records and metrics so downstream paper-output derivation does not depend on in-memory state.
+- Keep harnesses declarative: configs define workloads, methods, seeds, sweeps, outputs, and validation expectations; runner code handles orchestration.
+- Build tests from the bottom up: schema/config fixtures first, then adapter/lifecycle invariants, metric golden records, export schema checks, and a deterministic mini-run through the CLI.
