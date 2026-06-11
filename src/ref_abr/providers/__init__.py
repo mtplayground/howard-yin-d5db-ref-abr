@@ -14,6 +14,13 @@ from ref_abr.providers.cags import (
     normalize_cags_candidate_kind,
     resolve_cags_module,
 )
+from ref_abr.providers.ffmpeg_ladder import (
+    FFMpegLadderConfig,
+    FFMpegLadderProviderError,
+    FFMpegLadderRung,
+    FFMpegLadderTraceProvider,
+    resolve_ffmpeg_module,
+)
 from ref_abr.providers.pyav_decode import (
     PyAVDecodeProfilerConfig,
     PyAVDecodeProfilerError,
@@ -28,6 +35,10 @@ __all__ = [
     "CAGSStageOutput",
     "ExternalSubstrateProviderConfig",
     "ExternalTraceSubstrateProvider",
+    "FFMpegLadderConfig",
+    "FFMpegLadderProviderError",
+    "FFMpegLadderRung",
+    "FFMpegLadderTraceProvider",
     "PyAVDecodeProfilerConfig",
     "PyAVDecodeProfilerError",
     "PyAVDecodeProfilerProvider",
@@ -35,5 +46,6 @@ __all__ = [
     "load_external_substrate_provider",
     "normalize_cags_candidate_kind",
     "resolve_cags_module",
+    "resolve_ffmpeg_module",
     "resolve_pyav_module",
 ]
