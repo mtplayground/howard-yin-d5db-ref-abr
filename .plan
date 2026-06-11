@@ -1,43 +1,61 @@
-Architecture plan for howard-yin-d5db-ref-abr
+Architecture plan for issues #101-#107: external substrate measurement backends
 
-Repository shape
-- Python package under src/ref_abr with a single Click CLI entrypoint.
-- Tests under tests, split by layer: config/data loading, method interfaces, scheduler/lifecycle, metrics, exporters, and CLI smoke.
-- Versioned schemas under schemas, example configs and env documentation at repository root, deterministic fixtures under tests/fixtures.
-- Generated experiment artifacts should be written raw-first under a configured output directory, with stable manifests and machine-readable records.
+Scope and guiding principle
+- Keep ref_abr as a lightweight ABR scheduling, accounting, metrics, and replay toolkit.
+- Do not copy or reimplement codec, decoder, transcoder, or renderer algorithms in this repository.
+- Integrate CAGS, PyAV, and ffmpeg-python only through optional, thin adapter layers that emit normalized timing/quality/artifact records consumed by the existing substrate, scheduler, harness, and metrics code.
 
-Proposed module structure
-- ref_abr.cli: Click command group and uniform routing for plan_schedule, compute_metrics, freeze_method, derive_paper_outputs, and harness commands.
-- ref_abr.config: environment parsing, config loading, seed/split identity, stable config IDs, .env.example support.
-- ref_abr.domain: shared dataclasses or Pydantic models for scenes, sequences, device profiles, traces, candidates, schedules, references, frame outcomes, metrics, manifests, and schema version metadata.
-- ref_abr.schema: validation, schema migration/version checks, manifest validators, export schema helpers.
-- ref_abr.workloads: scene/sequence loaders, replay subset assembly, workload manifest construction.
-- ref_abr.traces: viewport, viewport-error sweep, network, and synthetic boundary trace normalizers.
-- ref_abr.devices: device profile loading and validation.
-- ref_abr.substrate: provider interface plus parametric and empirical lookup-table backends.
-- ref_abr.candidates: candidate object generation.
-- ref_abr.utility: utility scoring and deadline model.
-- ref_abr.methods: method adapter interface, observation/action-budget enforcement, baselines, ABR adaptations, oracles, MPC, virtual queue, ablation switches, and frozen method manifests.
-- ref_abr.scheduler: discrete-event core, reference lifecycle state machine, expiration/retransmission logic, timing/resource accounting, and frame outcome evaluation.
-- ref_abr.metrics: quality, deadline-QoE, useful-resource, lifecycle, resource-cost, control-stability, viewport-prediction, confidence, and missing-data validation metrics.
-- ref_abr.exporters: raw artifact export, metric-record export, reproducibility evidence, and paper-output derivation.
-- ref_abr.harnesses: generic runner plus named experiment harnesses for substitution surface, lifecycle deadline, selection, full-system QoE, ablations, stress robustness, and reproducibility.
+Module structure and file organization
+- src/ref_abr/external_records.py or src/ref_abr/schema_extensions.py
+  - Versioned external-measurement record dataclass/parsing helpers.
+  - JSON/JSONL/YAML load and validation functions reusing ref_abr.schema/config conventions.
+  - Canonical fields: generation_ms, transfer_ms, decode_ms, restore_ms, render_ms, encoded_bytes/size_bytes, visible_quality, dropped_frame, deadline_hit, artifact/provenance metadata.
+- src/ref_abr/providers/__init__.py
+  - Public provider exports and optional-backend discovery helpers.
+- src/ref_abr/providers/base.py
+  - ExternalSubstrateProvider protocol/base class.
+  - Common mapping from validated external records to SubstrateValue and ComponentTiming.
+  - Backend selection factory driven by config/provider_id while preserving existing parametric and empirical-table defaults.
+- src/ref_abr/providers/cags.py
+  - Optional adapter that assembles arguments for cags.encode/decode/pickup/render, invokes installed CAGS APIs, measures/collects output timings, compressed directory/.ply/.drc sizes, PSNR/LPIPS, and maps records to gaussian_base, gaussian_enhancement, tile, and reference_action candidates.
+  - Raises clear optional-dependency errors if CAGS is absent.
+- src/ref_abr/providers/pyav_decode.py
+  - Optional provider using PyAV to read frame/container metadata and measure decode_ms and size_bytes.
+  - Emits external-measurement records without implementing a decoder.
+- src/ref_abr/providers/ffmpeg_ladder.py
+  - Optional provider that scripts ffmpeg-python/ffmpeg for offline transcode, scale, and bitrate-ladder traces.
+  - Emits encode/generation size and timing records without implementing an encoder.
+- pyproject.toml
+  - Keep default install small: click and PyYAML only.
+  - Add extras: cags, video, render, test. Place PyAV/ffmpeg-python under video; CAGS and render libraries under cags/render only when appropriate.
+- README.md / PRODUCT.md / usage docs
+  - Document install extras, CAGS git install, backend selection config, expected trace formats, and licensing caveats.
+- tests/
+  - Unit tests for schema validation and mapping.
+  - Mocked adapter tests for CAGS/PyAV/ffmpeg invocations.
+  - Offline trace fixture end-to-end test through run_harness -> compute_metrics with deterministic outputs.
+
+Shared types and contracts
+- External measurement records are public, version-stamped contracts; incompatible schema versions fail fast.
+- Provenance should include backend name/version, source path or content id, command/API arguments, timestamps where relevant, and artifact references/sizes.
+- Provider outputs should normalize to existing SubstrateValue/ComponentTiming instead of introducing a parallel timing model.
+- Candidate-kind mapping stays aligned with existing candidate constants: gaussian_base, gaussian_enhancement, tile, reference_action.
+- Optional providers must be import-safe: importing ref_abr must not require CAGS, PyAV, ffmpeg-python, CUDA, or native renderer dependencies.
 
 Issue dependency flow
-- Foundation: #1 creates package/CLI; #2-#5 establish config, types, schemas, and environment conventions.
-- Input pipeline: #6-#12 load workloads, traces, devices, substrate values, replay subsets, and manifests.
-- Planning model: #13-#19 define candidates, utility/deadlines, method interface, baselines, ABR adaptations, and diagnostic comparators.
-- Simulation core: #20-#24 provide scheduler execution, lifecycle behavior, transport expiration/retransmission, accounting, and frame outcomes.
-- Artifacts and metrics: #25-#30 export raw records and compute all metric families through a stable entrypoint.
-- Harnesses and controllers: #31-#44 build the generic runner, experiment harnesses, calibration, advanced allocators/controllers, ablations, stress tests, and reproducibility evidence.
-- Paper and validation: #45 derives publication outputs; #46-#50 add focused tests and deterministic end-to-end smoke coverage.
+- #101 defines the external-measurement trace schema and validation utilities. All later provider issues depend on this record contract.
+- #102 adds the providers package, base provider interface, record-to-substrate mapping, and config-driven backend selection. CAGS/PyAV/ffmpeg adapters depend on this foundation.
+- #103 implements the CAGS 3DGS codec/render adapter as an optional backend using #101 records and #102 provider mapping.
+- #104 implements the PyAV decode-profiler provider as an optional video backend using #101/#102.
+- #105 implements the ffmpeg-python transcode/ladder trace provider as an optional offline video backend using #101/#102.
+- #106 adds optional dependency extras and docs after provider APIs settle, documenting each backend and keeping default dependencies minimal.
+- #107 adds mocked functional tests and an offline trace end-to-end check after schema, base provider, adapters, and docs are in place.
 
 Key design decisions
-- Keep CLI commands thin; command handlers should call typed application services so tests can bypass Click.
-- Use deterministic seeds, split identities, stable config IDs, and sorted serialization everywhere manifests or exported records are compared.
-- Treat schemas as explicit public contracts with version fields; reject unknown incompatible versions early and preserve raw input artifacts alongside normalized records.
-- Enforce method adapter contracts centrally: bounded observations, action budgets, deterministic behavior under fixed seeds, and validation before scheduler execution.
-- Model scheduling as deterministic discrete events with lifecycle state transitions as a separate testable state machine.
-- Prefer append-only, line-oriented or structured JSON exports for raw records and metrics so downstream paper-output derivation does not depend on in-memory state.
-- Keep harnesses declarative: configs define workloads, methods, seeds, sweeps, outputs, and validation expectations; runner code handles orchestration.
-- Build tests from the bottom up: schema/config fixtures first, then adapter/lifecycle invariants, metric golden records, export schema checks, and a deterministic mini-run through the CLI.
+- Prefer trace-first operation: real codec/render/player tools generate measurements, while ref_abr validates, maps, schedules, and evaluates them.
+- Never vendor third-party codec/render code; optional adapters should remain small and replaceable.
+- Keep provider selection declarative in config so experiments can switch among parametric, empirical-table, and external backends without code changes.
+- Use dependency injection and mocks in tests so CI does not need real CAGS, PyAV, ffmpeg, CUDA, or media assets.
+- Preserve deterministic serialization for records and artifacts to support reproducible harness outputs and paper-output derivation.
+- Treat filesystem artifacts as references in records; the core scheduling path should consume normalized metadata and timings, not binary blobs.
+- Provide clear error messages for missing optional extras, including which extra to install and which config requested the backend.
