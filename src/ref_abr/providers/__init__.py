@@ -14,6 +14,12 @@ from ref_abr.providers.cags import (
     normalize_cags_candidate_kind,
     resolve_cags_module,
 )
+from ref_abr.providers.pyav_decode import (
+    PyAVDecodeProfilerConfig,
+    PyAVDecodeProfilerError,
+    PyAVDecodeProfilerProvider,
+    resolve_pyav_module,
+)
 
 __all__ = [
     "CAGSAdapterConfig",
@@ -22,8 +28,12 @@ __all__ = [
     "CAGSStageOutput",
     "ExternalSubstrateProviderConfig",
     "ExternalTraceSubstrateProvider",
+    "PyAVDecodeProfilerConfig",
+    "PyAVDecodeProfilerError",
+    "PyAVDecodeProfilerProvider",
     "external_substrate_provider_from_mapping",
     "load_external_substrate_provider",
     "normalize_cags_candidate_kind",
     "resolve_cags_module",
+    "resolve_pyav_module",
 ]
