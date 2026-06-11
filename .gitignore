@@ -21,3 +21,5 @@ dist/
 .env
 .db_decision
 .storage_decision
+
+.env.production

@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from ref_abr.domain import (
     ControllerState,
     DomainError,
+    ExternalMeasurementRecord,
     FrameOutcome,
     FrozenMethodManifest,
     MediaObject,
@@ -99,6 +100,32 @@ SCHEMA_SPECS: Mapping[str, SchemaSpec] = {
         required_fields=("method_id", "method_name", "version", "config_id", "artifact_uri", "entrypoint"),
         optional_fields=("parameters", "source_uri", "metadata"),
     ),
+    "external_measurement": SchemaSpec(
+        record_type="external_measurement",
+        domain_type=ExternalMeasurementRecord,
+        required_fields=(
+            "generation_ms",
+            "transfer_ms",
+            "decode_ms",
+            "restore_ms",
+            "render_ms",
+            "visible_quality",
+            "dropped_frame",
+            "deadline_hit",
+            "provenance",
+        ),
+        optional_fields=(
+            "size_bytes",
+            "encoded_bytes",
+            "record_id",
+            "backend_id",
+            "object_id",
+            "frame_id",
+            "candidate_kind",
+            "artifact_uri",
+            "metadata",
+        ),
+    ),
 }
 
 
@@ -160,6 +187,8 @@ def validate_record_payload(record_type: str, payload: Mapping[str, Any], path: 
     spec = _schema_spec(record_type)
     raw_payload = _require_mapping(payload, path)
     _validate_field_set(spec, raw_payload, path)
+    if record_type == "external_measurement":
+        raw_payload = _normalize_external_measurement_payload(raw_payload, path)
     record = _build_domain_record(record_type, raw_payload, path)
     return record.as_payload()
 
@@ -217,6 +246,8 @@ def _schema_spec(record_type: str) -> SchemaSpec:
 
 def _validate_field_set(spec: SchemaSpec, payload: Mapping[str, Any], path: str) -> None:
     missing = [field for field in spec.required_fields if field not in payload]
+    if spec.record_type == "external_measurement" and "size_bytes" not in payload and "encoded_bytes" not in payload:
+        missing.append("size_bytes/encoded_bytes")
     if missing:
         raise SchemaError(f"{path} is missing required field(s): {', '.join(missing)}.")
 
@@ -224,6 +255,17 @@ def _validate_field_set(spec: SchemaSpec, payload: Mapping[str, Any], path: str)
     unknown = sorted(field for field in payload if field not in allowed)
     if unknown:
         raise SchemaError(f"{path} contains unknown field(s): {', '.join(unknown)}.")
+
+
+def _normalize_external_measurement_payload(payload: Mapping[str, Any], path: str) -> dict[str, Any]:
+    normalized = copy.deepcopy(dict(payload))
+    size_bytes = normalized.get("size_bytes")
+    encoded_bytes = normalized.pop("encoded_bytes", None)
+    if size_bytes is None:
+        normalized["size_bytes"] = encoded_bytes
+    elif encoded_bytes is not None and encoded_bytes != size_bytes:
+        raise SchemaError(f"{path}.encoded_bytes must match {path}.size_bytes when both are present.")
+    return normalized
 
 
 def _build_domain_record(record_type: str, payload: Mapping[str, Any], path: str) -> object:
@@ -253,6 +295,8 @@ def _build_domain_record(record_type: str, payload: Mapping[str, Any], path: str
             return MetricRecord(**payload)
         if record_type == "frozen_method_manifest":
             return FrozenMethodManifest(**payload)
+        if record_type == "external_measurement":
+            return ExternalMeasurementRecord(**_normalize_external_measurement_payload(payload, path))
     except KeyError as exc:
         raise SchemaError(f"{path} is missing required field {exc.args[0]!r}.") from exc
     except TypeError as exc:
