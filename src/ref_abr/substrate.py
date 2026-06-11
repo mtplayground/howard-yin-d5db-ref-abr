@@ -524,6 +524,14 @@ def load_substrate_provider(path: str | Path) -> SubstrateValueProvider:
     return substrate_provider_from_mapping(raw_provider, source_uri=str(provider_path))
 
 
+def load_external_substrate_provider(path: str | Path) -> SubstrateValueProvider:
+    """Load an external trace-backed substrate provider definition."""
+
+    from ref_abr.providers.base import load_external_substrate_provider as _load_external_substrate_provider
+
+    return _load_external_substrate_provider(path)
+
+
 def substrate_provider_from_mapping(
     raw_provider: Mapping[str, Any],
     *,
@@ -537,7 +545,21 @@ def substrate_provider_from_mapping(
         return parametric_substrate_provider_from_mapping(root, source_uri=source_uri)
     if backend == "empirical":
         return empirical_substrate_provider_from_mapping(root, source_uri=source_uri)
-    raise SubstrateError("provider.backend must select parametric or empirical.")
+    if backend == "external":
+        return external_substrate_provider_from_mapping(root, source_uri=source_uri)
+    raise SubstrateError("provider.backend must select parametric, empirical, or external.")
+
+
+def external_substrate_provider_from_mapping(
+    raw_provider: Mapping[str, Any],
+    *,
+    source_uri: str | None = None,
+) -> SubstrateValueProvider:
+    """Normalize an external trace-backed provider definition."""
+
+    from ref_abr.providers.base import external_substrate_provider_from_mapping as _external_provider_from_mapping
+
+    return _external_provider_from_mapping(raw_provider, source_uri=source_uri)
 
 
 def parametric_substrate_provider_from_mapping(
@@ -728,6 +750,8 @@ def _backend_name(value: Any) -> str:
         return "parametric"
     if normalized in {"empirical", "lookup", "lookup-table", "table", "lut"}:
         return "empirical"
+    if normalized in {"external", "trace", "external-trace", "external-measurement", "external-measurements"}:
+        return "external"
     return normalized
 
 
@@ -965,6 +989,8 @@ __all__ = [
     "coerce_substrate_query",
     "empirical_substrate_provider_from_mapping",
     "empirical_substrate_table_from_mapping",
+    "external_substrate_provider_from_mapping",
+    "load_external_substrate_provider",
     "load_empirical_substrate_provider",
     "load_parametric_substrate_provider",
     "load_substrate_provider",
