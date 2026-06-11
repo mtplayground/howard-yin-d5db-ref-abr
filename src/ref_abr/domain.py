@@ -342,6 +342,76 @@ class FrozenMethodManifest:
         }
 
 
+@dataclass(frozen=True)
+class ExternalMeasurementRecord:
+    """Validated timing, quality, and artifact measurements from an external backend.
+
+    These records are the boundary between RefABR scheduling experiments and
+    optional codec/render tooling.  They intentionally contain only normalized
+    measurements and provenance; backend-specific algorithm state stays outside
+    this repository.
+    """
+
+    generation_ms: int | float
+    transfer_ms: int | float
+    decode_ms: int | float
+    restore_ms: int | float
+    render_ms: int | float
+    size_bytes: int
+    visible_quality: int | float
+    dropped_frame: bool
+    deadline_hit: bool
+    provenance: Mapping[str, JsonValue]
+    record_id: str | None = None
+    backend_id: str | None = None
+    object_id: str | None = None
+    frame_id: str | None = None
+    candidate_kind: str | None = None
+    artifact_uri: str | None = None
+    metadata: Mapping[str, JsonValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for field_name in ("generation_ms", "transfer_ms", "decode_ms", "restore_ms", "render_ms"):
+            _require_non_negative_number(getattr(self, field_name), field_name)
+        _require_non_negative_int(self.size_bytes, "size_bytes")
+        _require_unit_interval(self.visible_quality, "visible_quality")
+        _require_bool(self.dropped_frame, "dropped_frame")
+        _require_bool(self.deadline_hit, "deadline_hit")
+        for field_name in ("record_id", "backend_id", "object_id", "frame_id", "candidate_kind", "artifact_uri"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_non_empty(value, field_name)
+        object.__setattr__(self, "provenance", _freeze_mapping(self.provenance, "provenance"))
+        object.__setattr__(self, "metadata", _freeze_mapping(self.metadata, "metadata"))
+
+    @property
+    def encoded_bytes(self) -> int:
+        """Alias used by codec-oriented tools for the normalized size field."""
+
+        return self.size_bytes
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "generation_ms": self.generation_ms,
+            "transfer_ms": self.transfer_ms,
+            "decode_ms": self.decode_ms,
+            "restore_ms": self.restore_ms,
+            "render_ms": self.render_ms,
+            "size_bytes": self.size_bytes,
+            "visible_quality": self.visible_quality,
+            "dropped_frame": self.dropped_frame,
+            "deadline_hit": self.deadline_hit,
+            "provenance": _to_payload_value(self.provenance),
+            "record_id": self.record_id,
+            "backend_id": self.backend_id,
+            "object_id": self.object_id,
+            "frame_id": self.frame_id,
+            "candidate_kind": self.candidate_kind,
+            "artifact_uri": self.artifact_uri,
+            "metadata": _to_payload_value(self.metadata),
+        }
+
+
 def _coerce_enum(enum_type: type[Enum], value: Enum | str, field_name: str) -> Enum:
     if isinstance(value, enum_type):
         return value
@@ -373,10 +443,21 @@ def _require_finite_number(value: int | float, field_name: str) -> None:
         raise DomainError(f"{field_name} must be finite.")
 
 
+def _require_non_negative_number(value: int | float, field_name: str) -> None:
+    _require_finite_number(value, field_name)
+    if value < 0:
+        raise DomainError(f"{field_name} must be non-negative.")
+
+
 def _require_unit_interval(value: float, field_name: str) -> None:
     _require_finite_number(value, field_name)
     if not 0.0 <= value <= 1.0:
         raise DomainError(f"{field_name} must be between 0 and 1.")
+
+
+def _require_bool(value: bool, field_name: str) -> None:
+    if not isinstance(value, bool):
+        raise DomainError(f"{field_name} must be a boolean.")
 
 
 def _freeze_string_tuple(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
@@ -430,6 +511,7 @@ def _to_payload_value(value: JsonValue) -> Any:
 __all__ = [
     "ControllerState",
     "DomainError",
+    "ExternalMeasurementRecord",
     "FrameOutcome",
     "FrozenMethodManifest",
     "JsonScalar",
